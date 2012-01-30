@@ -66,7 +66,7 @@ fu! s:opts()
 		\ 'PrtSelectMove("d")':   ['<PageDown>'],
 		\ 'PrtHistory(-1)':       ['<c-n>'],
 		\ 'PrtHistory(1)':        ['<c-p>'],
-		\ 'AcceptSelection("e")': ['<cr>', '<c-m>', '<2-LeftMouse>'],
+		\ 'AcceptSelection("e")': ['<cr>', '<2-LeftMouse>'],
 		\ 'AcceptSelection("h")': ['<c-x>', '<c-cr>', '<c-s>'],
 		\ 'AcceptSelection("t")': ['<c-t>', '<MiddleMouse>'],
 		\ 'AcceptSelection("v")': ['<c-v>', '<RightMouse>'],
@@ -75,7 +75,7 @@ fu! s:opts()
 		\ 'ToggleByFname()':      ['<c-d>'],
 		\ 'ToggleType(1)':        ['<c-f>', '<c-up>'],
 		\ 'ToggleType(-1)':       ['<c-b>', '<c-down>'],
-		\ 'PrtExpandDir()':       ['<tab>', '<c-i>'],
+		\ 'PrtExpandDir()':       ['<tab>'],
 		\ 'PrtInsert("w")':       ['<F2>', '<insert>'],
 		\ 'PrtInsert("s")':       ['<F3>'],
 		\ 'PrtInsert("v")':       ['<F4>'],
@@ -126,7 +126,7 @@ cal s:opts()
 let s:lash = ctrlp#utils#lash()
 
 " Limiters
-let [s:compare_lim, s:nocache_lim, s:mltipats_lim] = [3000, 4000, 2000]
+let [s:compare_lim, s:nocache_lim] = [3000, 4000]
 
 " Regexp
 let s:fpats = {
@@ -295,10 +295,14 @@ fu! s:Buffers() "{{{1
 	retu allbufs
 endf
 " * MatchedItems() {{{1
-fu! s:MatchIt(items, pat, limit, mfunc)
+fu! s:MatchIt(items, pat, limit, mfunc, ...)
 	let newitems = []
 	for item in a:items
-		if call(a:mfunc, [item, a:pat]) >= 0 | cal add(newitems, item) | en
+		try
+			if call(a:mfunc, [item, a:pat]) >= 0 && !( a:0 && index(a:1, item) >= 0 )
+				cal add(newitems, item)
+			en
+		cat | brea | endt
 		if a:limit > 0 && len(newitems) >= a:limit | brea | en
 	endfo
 	retu newitems
@@ -306,12 +310,7 @@ endf
 
 fu! s:MatchedItems(items, pats, limit)
 	let [items, pats, limit] = [a:items, a:pats, a:limit]
-	" If items is longer than s:mltipats_lim, use only the last pattern
-	if len(items) >= s:mltipats_lim || ( exists('s:height') && s:height > 20 )
-		let pats = [pats[-1]]
-	en
-	cal map(pats, 'substitute(v:val, "\\\~", "\\\\\\~", "g")')
-	if !s:regexp | cal map(pats, 'escape(v:val, ".")') | en
+	cal map(pats[1], 'escape(v:val, "~")')
 	let [type, ipt, mfunc] = [s:type(1), s:ispathitem(), 'match']
 	if s:byfname && ipt
 		let mfunc = 's:matchfname'
@@ -319,55 +318,55 @@ fu! s:MatchedItems(items, pats, limit)
 		let types = { 'tabs': 's:matchtabs', 'tabe': 's:matchtabe' }
 		if has_key(types, type) | let mfunc = types[type] | en
 	en
-	" Loop through the patterns
-	for pat in pats
-		" If newitems is small, set it as items to search in
-		if exists('newitems') && len(newitems) < limit
-			let items = copy(newitems)
-		en
-		if empty(items) " End here
-			retu exists('newitems') ? newitems : []
-		el " Start here, go back up if have 2 or more in pats
-			" Loop through the items
-			let newitems = s:MatchIt(items, pat, limit, mfunc)
-		en
-	endfo
-	let s:matches = len(newitems)
+	" Loop through the items
+	let stritems = []
+	if pats[0] == 'fuz'
+		let stritems = s:MatchIt(items, pats[1][0], limit, mfunc)
+		let limit = max([limit - len(stritems), 0])
+	en
+	let fuzitems = limit
+		\ ? s:MatchIt(items, pats[1][1], limit, mfunc, stritems) : []
+	let newitems = stritems + fuzitems
+	let [s:matches, s:lenstrs] = [len(newitems), len(stritems)]
 	retu newitems
 endf
-fu! s:SplitPattern(str, ...) "{{{1
+fu! s:SplitPattern(str) "{{{1
 	let str = s:sanstail(a:str)
-	if s:migemo && s:regexp && len(str) > 0 && executable('cmigemo')
+	if s:migemo && s:regexp && strlen(str) > 0 && executable('cmigemo')
 		let str = s:migemo(str)
 	en
 	let s:savestr = str
 	if s:regexp || match(str, '\\\(<\|>\)\|[*|]') >= 0
 		let array = [s:regexfilter(str)]
+		let mmod = 'reg'
 	el
 		let array = split(str, '\zs')
 		if exists('+ssl') && !&ssl
-			cal map(array, 'substitute(v:val, "\\", "\\\\\\", "g")')
+			cal map(array, 'escape(v:val, ''\'')')
+			let str = escape(str, '\')
 		en
-		" Literal ^ and $
-		for each in ['^', '$']
-			cal map(array, 'substitute(v:val, "\\\'.each.'", "\\\\\\'.each.'", "g")')
+		" Literal ^, $ and .
+		for each in ['^', '$', '.']
+			cal map(array, 'escape(v:val, each)')
+			let str = escape(str, each)
 		endfo
+		let mmod = 'fuz'
 	en
-	" Build the new pattern
-	let nitem = !empty(array) ? array[0] : ''
-	let newpats = [nitem]
-	if len(array) > 1
+	" Build the patterns
+	if empty(array) | let array = [''] | en
+	let nitem = array[0]
+	if mmod == 'reg'
+		let newpats = [str, array[0]]
+	el
 		for item in range(1, len(array) - 1)
-			" Separator
-			let sep = a:0 ? a:1 : '[^'.array[item-1].']\{-}'
-			let nitem .= sep.array[item]
-			cal add(newpats, nitem)
+			let nitem .= '[^'.array[item - 1].']\{-}'.array[item]
 		endfo
+		let newpats = [str, nitem]
 	en
-	retu newpats
+	retu [mmod, newpats]
 endf
 " * BuildPrompt() {{{1
-fu! s:Render(lines, pat)
+fu! s:Render(lines, pats)
 	let lines = a:lines
 	" Setup the match window
 	let s:height = min([len(lines), s:mxheight])
@@ -384,16 +383,23 @@ fu! s:Render(lines, pat)
 	" Sort if not MRU
 	if ( s:itemtype != 2 && !exists('g:ctrlp_nolimit') )
 		\ || !empty(join(s:prompt, ''))
-		let s:compat = a:pat
+		if s:lenstrs
+			let s:compat = a:pats[0]
+			exe 'let part1 = sort(lines[:'.( s:lenstrs - 1 ).'], "s:mixedsort")'
+			let s:compat = a:pats[1]
+			exe 'let part2 = sort(lines['.s:lenstrs.':], "s:mixedsort")'
+			let lines = part1 + part2
+		el
+			let s:compat = a:pats[1]
 		cal sort(lines, 's:mixedsort')
-		unl s:compat
+		en
+		unl s:compat s:lenstrs
 	en
 	if s:mwreverse | cal reverse(lines) | en
 	let s:matched = copy(lines)
 	cal map(lines, '"> ".v:val')
 	cal setline(1, lines)
-	exe 'keepj norm!' s:mwreverse ? 'G' : 'gg'
-	keepj norm! 1|
+	exe 'keepj norm!' ( s:mwreverse ? 'G' : 'gg' ).'1|'
 	cal s:unmarksigns()
 	cal s:remarksigns()
 	if exists('s:cline') && !exists('g:ctrlp_nolimit')
@@ -401,14 +407,13 @@ fu! s:Render(lines, pat)
 	en
 	" Highlighting
 	if s:dohighlight()
-		cal s:highlight(a:pat, s:mathi[1] == '' ? 'Identifier' : s:mathi[1])
+		cal s:highlight(a:pats, s:mathi[1] == '' ? 'Identifier' : s:mathi[1])
 	en
 endf
 
 fu! s:Update(str)
 	" Get the previous string if existed
 	let oldstr = exists('s:savestr') ? s:savestr : ''
-	let pats = s:SplitPattern(a:str)
 	" Get the new string sans tail
 	let notail = substitute(a:str, '\\\\', '\', 'g')
 	let notail = substitute(notail, '\\\@<!:\([^:]\|\\:\)*$', '', '')
@@ -417,15 +422,16 @@ fu! s:Update(str)
 	if notail == oldstr && !empty(notail) && !exists('s:force')
 		retu
 	en
+	let pats = s:SplitPattern(a:str)
 	let lines = exists('g:ctrlp_nolimit') && empty(notail) ? copy(g:ctrlp_lines)
 		\ : s:MatchedItems(g:ctrlp_lines, copy(pats), s:mxheight)
-	cal s:Render(lines, pats[-1])
+	cal s:Render(lines, pats[1])
 endf
 
 fu! s:ForceUpdate()
 	let [estr, prt] = ['"\', copy(s:prompt)]
 	cal map(prt, 'escape(v:val, estr)')
-	cal s:Update(join(prt, ''))
+	sil! cal s:Update(join(prt, ''))
 endf
 
 fu! s:BuildPrompt(upd, ...)
@@ -435,7 +441,7 @@ fu! s:BuildPrompt(upd, ...)
 	let str = join(prt, '')
 	let lazy = empty(str) || exists('s:force') || !has('autocmd') ? 0 : s:lazy
 	if a:upd && !lazy && ( s:matches || s:regexp
-		\ || match(str, '[*|]') >= 0 || match(str, '\\\:\([^:]\|\\:\)*$') >= 0 )
+		\ || match(str, '\(\\\(<\|>\)\|[*|]\)\|\(\\\:\([^:]\|\\:\)*$\)') >= 0 )
 		sil! cal s:Update(str)
 	en
 	sil! cal ctrlp#statusline()
@@ -701,7 +707,7 @@ fu! s:PrtSwitcher()
 endf
 fu! s:SetWD(...) "{{{1
 	let pathmode = s:pathmode
-	if exists('a:1') && len(a:1) | if type(a:1)
+	if exists('a:1') && strlen(a:1) | if type(a:1)
 		cal ctrlp#setdir(a:1) | retu
 	el
 		let pathmode = a:1
@@ -928,13 +934,14 @@ fu! s:comparent(s1, s2)
 endf
 
 fu! s:matchlens(str, pat, ...)
-	if empty(a:pat) || index(['^','$'], a:pat) >= 0 | retu {} | en
+	if empty(a:pat) || index(['^', '$'], a:pat) >= 0 | retu {} | en
 	let st   = exists('a:1') ? a:1 : 0
 	let lens = exists('a:2') ? a:2 : {}
 	let nr   = exists('a:3') ? a:3 : 0
-	if match(a:str, a:pat, st) != -1
+	if nr > 20 | retu {} | en
+	if match(a:str, a:pat, st) >= 0
 		let [mst, mnd] = [matchstr(a:str, a:pat, st), matchend(a:str, a:pat, st)]
-		let lens = extend(lens, { nr : [len(mst), mst] })
+		let lens = extend(lens, { nr : [strlen(mst), mst] })
 		let lens = s:matchlens(a:str, a:pat, mnd, lens, nr + 1)
 	en
 	retu lens
@@ -1146,19 +1153,20 @@ fu! s:syntax()
 	en
 endf
 
-fu! s:highlight(pat, grp)
+fu! s:highlight(pats, grp)
 	cal clearmatches()
-	if !empty(a:pat) && s:ispathitem()
-		let pat = substitute(a:pat, '\~', '\\~', 'g')
-		let pat = s:regexp
-			\ ? substitute(pat, '\\\@<!\^', '^> \\zs', 'g')
-			\ : escape(pat, '.')
-		" Match only filename
-		if s:byfname
-			let pat = substitute(pat, '\[\^\(.\{-}\)\]\\{-}', '[^\\/\1]\\{-}', 'g')
-			let pat = substitute(pat, '$', '\\ze[^\\/]*$', 'g')
+	if a:pats != ['', ''] && s:ispathitem()
+		let pats = a:pats
+		if s:regexp
+			cal map(pats, 'substitute(v:val, ''\\\@<!\^'', ''^> \\zs'', "g")')
 		en
-		cal matchadd(a:grp, '\c'.pat)
+		if s:byfname
+			" Match only filename
+			cal map(pats, 'substitute(v:val, ''\[\^\(.\{-}\)\]\\{-}'', ''[^\\/\1]\\{-}'', "g")')
+			cal map(pats, 'substitute(v:val, ''$'', ''\\ze[^\\/]*$'', "g")')
+		en
+		cal matchadd(a:grp, '\c'.pats[0])
+		cal matchadd(a:grp, '\c'.pats[1])
 		cal matchadd('CtrlPLinePre', '^>')
 	en
 endf
@@ -1362,7 +1370,7 @@ fu! s:migemo(str)
 		let [tokens, str, cmd] = [split(str, '\s'), '', 'cmigemo -v -w %s -d %s']
 		for token in tokens
 			let rtn = system(printf(cmd, shellescape(token), shellescape(dict)))
-			let str .= !v:shell_error && len(rtn) > 0 ? '.*'.rtn : token
+			let str .= !v:shell_error && strlen(rtn) > 0 ? '.*'.rtn : token
 		endfo
 	en
 	retu str
